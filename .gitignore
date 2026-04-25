@@ -1,0 +1,22 @@
+# Dependencies
+node_modules/
+
+# Hardhat
+cache/
+artifacts/
+typechain-types/
+
+# Circom / SnarkJS artifacts (regenerate with README commands)
+circuits/*.r1cs
+circuits/*.sym
+circuits/*.wasm
+circuits/verification_key.json
+circuits/sig_commitment_js/
+circuits/*_0000.zkey
+circuits/*_final.zkey
+
+# Powers of Tau (Hermez download; see README)
+ptau/*.ptau
+
+# Accidental root-level circuit outputs
+/sig_commitment.sym
