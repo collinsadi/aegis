@@ -23,17 +23,19 @@
 import { Router, Request, Response } from "express";
 import { ethers } from "ethers";
 import { KeyStore } from "../services/keyStore";
+import { verifyKeyAgainstChain } from "../services/onChain";
 
 const router = Router();
 
 // ── Health check ─────────────────────────────────────────────────────────────
 
-router.get("/health", (_req: Request, res: Response) => {
+router.get("/health", async (_req: Request, res: Response) => {
+  const count = await KeyStore.count();
   return res.json({
     status:    "ok",
     gateway:   "Aegis CCIP-Read Gateway",
     timestamp: Math.floor(Date.now() / 1000),
-    keys:      KeyStore.count(),
+    keys:      count,
   });
 });
 
@@ -52,11 +54,9 @@ router.get("/ccip/:sender/:data", async (req: Request, res: Response) => {
     // abi.encode(bytes32 node) — 32 bytes padded to 64 hex chars
     let node: string;
     try {
-      // Try decoding as abi.encode(bytes32)
       const decoded = ethers.AbiCoder.defaultAbiCoder().decode(["bytes32"], data);
       node = decoded[0] as string;
     } catch {
-      // Try decoding as abi.encode(bytes) wrapping a bytes32
       const outerDecoded = ethers.AbiCoder.defaultAbiCoder().decode(["bytes"], data);
       const inner = outerDecoded[0] as string;
       const decoded2 = ethers.AbiCoder.defaultAbiCoder().decode(["bytes32"], inner);
@@ -65,7 +65,7 @@ router.get("/ccip/:sender/:data", async (req: Request, res: Response) => {
 
     console.log(`[CCIP] Looking up node: ${node}`);
 
-    const record = KeyStore.get(node);
+    const record = await KeyStore.get(node);
     if (!record) {
       console.warn(`[CCIP] Key not found for node: ${node}`);
       return res.status(404).json({
@@ -98,7 +98,7 @@ router.get("/ccip/:sender/:data", async (req: Request, res: Response) => {
 
 // ── Register endpoint ─────────────────────────────────────────────────────────
 
-router.post("/register", (req: Request, res: Response) => {
+router.post("/register", async (req: Request, res: Response) => {
   const { node, publicKeyHex, agentLabel } = req.body;
 
   if (!node || !publicKeyHex || !agentLabel) {
@@ -124,8 +124,15 @@ router.post("/register", (req: Request, res: Response) => {
     });
   }
 
+  // Verify the submitted key matches the pubKeyHash stored on-chain.
+  // Only the agent that knows the real 1952-byte key can pass this check.
+  const check = await verifyKeyAgainstChain(node, keyBuffer);
+  if (!check.ok) {
+    return res.status(403).json({ error: "verification_failed", message: check.reason });
+  }
+
   try {
-    KeyStore.set(node, keyBuffer, agentLabel);
+    await KeyStore.set(node, keyBuffer, agentLabel);
     const pubKeyHash = ethers.keccak256(keyBuffer);
     return res.json({
       success:   true,
@@ -142,8 +149,9 @@ router.post("/register", (req: Request, res: Response) => {
 
 // ── List all keys (debug/demo only) ──────────────────────────────────────────
 
-router.get("/keys", (_req: Request, res: Response) => {
-  const keys = KeyStore.list().map(r => ({
+router.get("/keys", async (_req: Request, res: Response) => {
+  const records = await KeyStore.list();
+  const keys = records.map(r => ({
     node:         r.node,
     agentLabel:   r.agentLabel,
     pubKeyHash:   r.pubKeyHash,
