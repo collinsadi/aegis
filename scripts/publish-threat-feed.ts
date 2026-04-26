@@ -11,7 +11,7 @@
  */
 
 import * as dotenv from "dotenv";
-dotenv.config();
+dotenv.config({ path: "../.env" });
 
 import { ethers } from "ethers";
 import { ENS_CONFIG } from "../config/ens.config";
