@@ -1,0 +1,19 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model PublicKey {
+  node         String   @id @db.Char(66)
+  agentLabel   String
+  publicKey    Bytes
+  pubKeyHash   String   @db.Char(66)
+  registeredAt DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("public_keys")
+}
