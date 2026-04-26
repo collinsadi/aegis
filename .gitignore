@@ -20,3 +20,22 @@ ptau/*.ptau
 
 # Accidental root-level circuit outputs
 /sig_commitment.sym
+
+# Environment variables
+.env
+contracts/.env
+
+# TypeScript build output
+config/*.js
+config/*.js.map
+config/*.d.ts
+config/*.d.ts.map
+sdk/dist/
+
+# SDK proving artifacts (generated)
+# sdk/circuits/*.wasm
+# sdk/circuits/*.zkey
+# sdk/circuits/verification_key.json
+
+# Hardhat Ignition deployment artifacts
+contracts/ignition/deployments/
