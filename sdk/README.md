@@ -117,12 +117,45 @@ console.log(oracle.shouldDeprecate());  // true
 ```typescript
 const wallet = new AegisWallet(agentId: string)
 wallet.keyPair.publicKey        // Uint8Array, 1952 bytes
-wallet.keyPair.secretKey        // Uint8Array, 4032 bytes
+wallet.keyPair.secretKey        // Uint8Array, 4032 bytes — see storage warning below
 wallet.keyPair.publicKeyHex     // "0x..." hex string
-wallet.sign(message: Uint8Array): SignedOperation
+wallet.sign(message, secretKey?) // secretKey optional — pass from secure storage
 wallet.verify(message: Uint8Array, signature: Uint8Array): boolean
 wallet.publicKeyHash(): string  // keccak256 hex, use this on-chain
 ```
+
+The `sign()` method accepts an optional `secretKey` parameter. When omitted it uses
+`this.keyPair.secretKey`. Pass it explicitly when loading the key from secure storage
+rather than keeping it in memory:
+
+```typescript
+// Load from secure storage (env var, secrets manager, encrypted file, etc.)
+const secretKey = Buffer.from(process.env.AGENT_SECRET_KEY!, "hex");
+
+const signed = wallet.sign(message, secretKey);
+```
+
+### Secret key storage
+
+> **The ML-DSA secret key is 4032 bytes. Losing it means the agent can never sign again.
+> Exposing it means anyone can impersonate the agent permanently.**
+
+Rules for production agents:
+
+- **Never commit it.** Do not hardcode it in source, `.env` files checked into git, or
+  config files in the repo.
+- **Never log it.** Avoid any `console.log(wallet.keyPair.secretKey)` or object spread
+  that might leak it into logs.
+- **Store it encrypted at rest.** Options in order of preference:
+  - A secrets manager (AWS Secrets Manager, HashiCorp Vault, GCP Secret Manager)
+  - An encrypted environment variable injected at runtime by your deployment platform
+  - An AES-256-GCM encrypted file with the encryption key stored separately
+- **Load it once per process, then discard the raw bytes** from memory as soon as signing
+  is complete if your runtime supports it.
+- **Back it up before rotating.** If `rotateKey()` fails mid-flight and you have already
+  discarded the old key, the agent's ENS name becomes unresolvable until you restore it.
+
+The public key and `pubKeyHash` are safe to store anywhere — they are public.
 
 ---
 
