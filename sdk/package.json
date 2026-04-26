@@ -1,0 +1,44 @@
+{
+  "name": "@0xaegis/sdk",
+  "version": "1.0.0",
+  "description": "Post-quantum agent wallet SDK for Ethereum — ML-DSA signing, ZK proof generation, ENS agent identity",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "circuits",
+    "abis"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "post-quantum",
+    "ethereum",
+    "agent",
+    "wallet",
+    "ml-dsa",
+    "dilithium",
+    "zk",
+    "groth16",
+    "ens",
+    "account-abstraction"
+  ],
+  "author": "Collins Adi <collins@0xaegis.eth>",
+  "license": "MIT",
+  "dependencies": {
+    "@noble/post-quantum": "^0.2.0",
+    "snarkjs": "^0.7.0",
+    "circomlibjs": "^0.1.7",
+    "ethers": "^6.11.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  },
+  "peerDependencies": {
+    "ethers": "^6.11.0"
+  }
+}
