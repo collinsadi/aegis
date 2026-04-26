@@ -50,6 +50,7 @@ async function main() {
     console.log(`Exported: ${exp.outputName} → sdk/abis/${exp.outputName}`);
   }
 
+  console.log(`${EXPORTS.length} ABI files exported to sdk/abis/`);
   console.log("\nABI export complete. sdk/abis/ is ready.");
 }
 
