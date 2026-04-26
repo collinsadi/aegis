@@ -1,7 +1,9 @@
 import { ethers } from "hardhat";
-import { AegisWallet } from "../sdk/wallet";
-import { AegisProver } from "../sdk/prover";
-import { QuantumOracle } from "../sdk/oracle";
+import { AegisWallet } from "../sdk/src/wallet";
+import { AegisProver } from "../sdk/src/prover";
+import { QuantumOracle } from "../sdk/src/oracle";
+import { AegisENS } from "../sdk/src/ens";
+import { ENS_CONFIG } from "../config/ens.config";
 
 async function main() {
   console.log("=== Aegis Demo ===\n");
@@ -32,20 +34,55 @@ async function main() {
   console.log(`Alice pubKeyHash: ${aliceWallet.publicKeyHash()}`);
   console.log(`Bob   pubKeyHash: ${bobWallet.publicKeyHash()}`);
 
-  // --- Step 3: Deploy AegisAccount for Alice ---
-  console.log("\nDeploying AegisAccount for Alice...");
-  const AccountFactory = await ethers.getContractFactory("AegisAccount", deployer);
+  // --- Step 3b: Deploy AegisFactory ---
+  console.log("\nDeploying AegisFactory...");
+  const FactoryContractDef = await ethers.getContractFactory("AegisFactory", deployer);
+  const aegisFactory = await FactoryContractDef.deploy(verifierAddress);
+  await aegisFactory.waitForDeployment();
+  const factoryAddress = await aegisFactory.getAddress();
+  console.log(`AegisFactory deployed at: ${factoryAddress}`);
 
+  // --- Step 3c: Deploy AegisAccount for Alice via factory ---
+  console.log("\nDeploying AegisAccount for Alice via AegisFactory...");
   const alicePubKeyHashBytes32 = aliceWallet.publicKeyHash() as `0x${string}`;
-  const aliceAccount = await AccountFactory.deploy(
+
+  // Predict Alice's account address before deployment
+  const alicePredicted = await aegisFactory.predictAddressFull(
     await aliceOwner.getAddress(),
     await oracleSigner.getAddress(),
-    verifierAddress,
-    alicePubKeyHashBytes32
+    alicePubKeyHashBytes32,
+    ethers.ZeroHash
   );
-  await aliceAccount.waitForDeployment();
-  const aliceAccountAddress = await aliceAccount.getAddress();
+  console.log(`Alice predicted address: ${alicePredicted}`);
+
+  // Deploy via factory
+  const deployTx = await aegisFactory.deployAgent(
+    await aliceOwner.getAddress(),
+    await oracleSigner.getAddress(),
+    alicePubKeyHashBytes32,
+    ethers.ZeroHash
+  );
+  const deployReceipt = await deployTx.wait();
+
+  // Read actual address from AgentDeployed event
+  let aliceAccountAddress = alicePredicted;
+  if (deployReceipt && deployReceipt.logs) {
+    for (const log of deployReceipt.logs) {
+      try {
+        const parsed = aegisFactory.interface.parseLog(log);
+        if (parsed && parsed.name === "AgentDeployed") {
+          aliceAccountAddress = parsed.args.account;
+          break;
+        }
+      } catch { /* skip */ }
+    }
+  }
   console.log(`Alice's AegisAccount deployed at: ${aliceAccountAddress}`);
+  console.log(`Verified by factory: ${await aegisFactory.isAegisAccount(aliceAccountAddress)}`);
+
+  // Attach to the deployed account so we can call methods on it
+  const AccountArtifact = await ethers.getContractFactory("AegisAccount", deployer);
+  const aliceAccount = AccountArtifact.attach(aliceAccountAddress);
 
   // Fund Alice's account with 1 ETH so it can execute operations
   await deployer.sendTransaction({ to: aliceAccountAddress, value: ethers.parseEther("1") });
@@ -132,6 +169,32 @@ async function main() {
   } catch (e: any) {
     console.log("Correctly rejected ECDSA:", e.reason || e.message);
   }
+
+  // --- ENS Demo ---
+  console.log("\n--- ENS Integration Demo ---");
+
+  // In a real deployment, aegisEns.init() connects to the deployed AegisENSResolver.
+  // For the demo we show the handshake verification logic without on-chain writes
+  // because ENS resolver deployment requires a live node with ENS registry.
+
+  console.log(`Parent domain: ${ENS_CONFIG.PARENT_DOMAIN}`);
+  console.log(`Threat feed domain: ${ENS_CONFIG.THREAT_FEED_DOMAIN}`);
+  console.log(`Alice ENS name: ${AegisENS.agentName("alice")}`);
+  console.log(`Alice ENS namehash: ${AegisENS.namehash(AegisENS.agentName("alice"))}`);
+
+  // Demonstrate handshake verification without on-chain resolver
+  console.log("\nSimulating PQ handshake (offline)...");
+  const bobWalletForHandshake = new AegisWallet("agent-bob-handshake");
+  const challengeNonce = ethers.randomBytes(32);
+  const bobResponse = bobWalletForHandshake.sign(challengeNonce);
+
+  const handshakeValid = bobWalletForHandshake.verify(
+    challengeNonce,
+    bobResponse.signature
+  );
+
+  console.log(`Handshake result: ${handshakeValid ? "VERIFIED ✓" : "FAILED ✗"}`);
+  console.log("In production: pubKeyHash verified against alice.0xaegis.eth on-chain record");
 
   console.log("\n=== Demo complete ===");
 }
