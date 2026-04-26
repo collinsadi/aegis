@@ -38,7 +38,7 @@ export class AegisWallet {
   // The message should be the raw bytes you want to authenticate —
   // for example, the ABI-encoded calldata of an operation.
   sign(message: Uint8Array): SignedOperation {
-    const signature = ml_dsa65.sign(message, this.keyPair.secretKey);
+    const signature = ml_dsa65.sign(this.keyPair.secretKey, message);
     return {
       message,
       signature,
@@ -48,7 +48,7 @@ export class AegisWallet {
 
   // verify checks that a signature is valid for a message under this wallet's public key.
   verify(message: Uint8Array, signature: Uint8Array): boolean {
-    return ml_dsa65.verify(signature, message, this.keyPair.publicKey);
+    return ml_dsa65.verify(this.keyPair.publicKey, message, signature);
   }
 
   // publicKeyHash returns a hex string of the keccak256 hash of the public key.
