@@ -38,4 +38,4 @@ sdk/dist/
 # sdk/circuits/verification_key.json
 
 # Hardhat Ignition deployment artifacts
-contracts/ignition/deployments/
+contracts/ignition/deployments/demo/.state.json
