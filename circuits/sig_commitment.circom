@@ -19,6 +19,13 @@ include "../node_modules/circomlib/circuits/bitify.circom";
   Output:
     - The circuit has no output signals. It constrains that:
       Poseidon(sigHigh, sigLow, msgHash) === commitment
+
+  SECURITY NOTE: This circuit is a binding commitment scheme, not a full ML-DSA verifier.
+  It proves knowledge of (sigHigh, sigLow, msgHash) such that their Poseidon hash equals
+  the public commitment. Off-chain ML-DSA signature validation is performed by AegisProver
+  before proof generation. The combination of off-chain validity + on-chain commitment
+  binding provides the complete security guarantee. Full in-circuit lattice verification
+  is planned for V2.
 */
 
 template SigCommitment() {
