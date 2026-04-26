@@ -16,8 +16,8 @@ import Groth16VerifierModule from "./Groth16Verifier";
 const AegisAccountModule = buildModule("AegisAccountModule", (m) => {
   const { verifier } = m.useModule(Groth16VerifierModule);
 
-  const owner = m.getParameter("owner", "0x0000000000000000000000000000000000000001");
-  const oracle = m.getParameter("oracle", "0x0000000000000000000000000000000000000002");
+  const owner  = m.getParameter("owner",  "0x0000000000000000000000000000000000000000");
+  const oracle = m.getParameter("oracle", "0x0000000000000000000000000000000000000000");
   const pubKeyHash = m.getParameter(
     "pubKeyHash",
     "0x0000000000000000000000000000000000000000000000000000000000000001"
