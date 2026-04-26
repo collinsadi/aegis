@@ -31,6 +31,7 @@ npm install @0xaegis/sdk ethers
 | `AegisWallet` | Generates ML-DSA keypairs, signs operations |
 | `AegisProver` | Builds Poseidon commitments, generates Groth16 proofs |
 | `AegisENS` | ENS registration, resolution, handshake, oracle feed |
+| `AegisGateway` | Publishes and rotates ML-DSA public keys on the CCIP-Read gateway |
 | `QuantumOracle` | Threat scoring, autonomous `deprecateECDSA()` |
 | `ENS_CONFIG` | All ENS constants (domain names, text record keys) |
 
@@ -39,7 +40,7 @@ npm install @0xaegis/sdk ethers
 ## Quickstart
 
 ```typescript
-import { AegisWallet, AegisProver, AegisENS, QuantumOracle } from "@0xaegis/sdk";
+import { AegisWallet, AegisProver, AegisENS, AegisGateway, QuantumOracle } from "@0xaegis/sdk";
 import { ethers } from "ethers";
 
 // 1. Spawn an agent wallet
@@ -80,6 +81,12 @@ await ens.publishProfile("my-agent", {
   model: "gpt-4o",
   uptime: "99.5",
 });
+
+// 5b. Publish the full public key to the CCIP-Read gateway
+//     Must be called explicitly after registerAgent() — not automatic.
+//     The gateway verifies the key against the on-chain hash before storing.
+const gateway = new AegisGateway("https://gateway.0xaegis.eth");
+await gateway.registerKey("my-agent", agent.keyPair.publicKey, "my-agent");
 
 // 6. Resolve another agent
 const record = await ens.resolveAgent("alice");
@@ -151,6 +158,41 @@ await ens.verifyHandshake(nonce, sig, pubKey, hash)    // PQ handshake step 2
 AegisENS.namehash(name)    // ethers.namehash wrapper
 AegisENS.agentName(label)  // "alice" → "alice.0xaegis.eth"
 ```
+
+---
+
+## AegisGateway
+
+The gateway stores the full 1952-byte ML-DSA public keys that the resolver contract cannot hold on-chain. It is a separate, explicit step — nothing calls it automatically.
+
+**Two-step flow for registration:**
+```typescript
+// Step 1 — on-chain: store pubKeyHash on AegisENSResolver
+await ens.registerAgent(label, accountAddress, wallet.publicKeyHash());
+
+// Step 2 — off-chain: publish the full key to the gateway
+const gateway = new AegisGateway("https://gateway.0xaegis.eth");
+await gateway.registerKey(label, wallet.keyPair.publicKey, label);
+```
+
+**Two-step flow for key rotation:**
+```typescript
+// Step 1 — on-chain: update pubKeyHash on AegisENSResolver
+await ens.rotateKey(label, newWallet.publicKeyHash());
+
+// Step 2 — off-chain: update the full key on the gateway
+await gateway.rotateKey(label, newWallet.keyPair.publicKey, label);
+```
+
+```typescript
+const gateway = new AegisGateway(gatewayUrl: string)
+
+await gateway.registerKey(label, publicKey, agentLabel)  // publish key after on-chain registration
+await gateway.rotateKey(label, newPublicKey, agentLabel) // update key after on-chain rotation
+await gateway.health()                                   // → { status, keys, timestamp }
+```
+
+The gateway rejects any key whose `keccak256` does not match the `pubKeyHash` stored on-chain for that node. You cannot overwrite another agent's key.
 
 ---
 
