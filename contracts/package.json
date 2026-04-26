@@ -1,0 +1,39 @@
+{
+  "name": "@0xaegis/contracts",
+  "version": "1.0.0",
+  "description": "Aegis post-quantum agent wallet smart contracts",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:coverage": "hardhat coverage",
+    "test:factory": "hardhat test test/AegisFactory.test.ts",
+    "test:account": "hardhat test test/AegisAccount.test.ts",
+    "test:resolver": "hardhat test test/AegisENSResolver.test.ts",
+    "deploy:verifier:local": "hardhat ignition deploy ignition/modules/Groth16Verifier.ts --network localhost",
+    "deploy:resolver:local": "hardhat ignition deploy ignition/modules/AegisENSResolver.ts --network localhost",
+    "deploy:factory:local": "hardhat ignition deploy ignition/modules/AegisFactory.ts --network localhost",
+    "deploy:local": "npm run deploy:verifier:local && npm run deploy:resolver:local && npm run deploy:factory:local",
+    "deploy:verifier:sepolia": "hardhat ignition deploy ignition/modules/Groth16Verifier.ts --network sepolia",
+    "deploy:resolver:sepolia": "hardhat ignition deploy ignition/modules/AegisENSResolver.ts --network sepolia",
+    "deploy:factory:sepolia": "hardhat ignition deploy ignition/modules/AegisFactory.ts --network sepolia",
+    "deploy:sepolia": "npm run deploy:verifier:sepolia && npm run deploy:resolver:sepolia && npm run deploy:factory:sepolia",
+    "export:abis": "hardhat run scripts/exportAbis.ts",
+    "node": "hardhat node",
+    "clean": "hardhat clean"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ignition-ethers": "^0.15.0",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/chai": "^4.3.0",
+    "@types/node": "^20.0.0",
+    "chai": "^4.4.1",
+    "dotenv": "^17.4.2",
+    "hardhat": "^2.22.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "ethers": "^6.11.0"
+  }
+}
