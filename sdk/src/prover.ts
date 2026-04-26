@@ -3,7 +3,7 @@ import * as path from "path";
 import { buildPoseidon } from "circomlibjs";
 
 // Paths to the compiled circuit artifacts
-const WASM_PATH = path.resolve(__dirname, "../circuits/sig_commitment_js/sig_commitment.wasm");
+const WASM_PATH = path.resolve(__dirname, "../circuits/sig_commitment.wasm");
 const ZKEY_PATH = path.resolve(__dirname, "../circuits/sig_commitment_final.zkey");
 
 // PoseidonHasher wraps circomlibjs's Poseidon so we can call it from TypeScript.
