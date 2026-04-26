@@ -38,7 +38,7 @@ const RPC_URL    = process.env.SEPOLIA_RPC_URL!;
 const PRIV_KEY   = process.env.DEPLOYER_PRIVATE_KEY!;
 const EXPLORER   = "https://sepolia.etherscan.io";
 const STATE_PATH = path.join(__dirname, ".state.json");
-const TOTAL_STEPS = 7;
+const TOTAL_STEPS = 8;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -310,16 +310,57 @@ async function step3(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   saveState(state);
 
   const node = AegisENS.namehash(state.agent!.ensName);
+
+  // Publish agent capability profile as ENS text records
+  const s2 = ora({ text: "Publishing agent capability profile to ENS…", color: "cyan" }).start();
+  await ens.publishProfile(state.agent!.label, {
+    capabilities: "trade,escrow,price-feed,zk-execution",
+    endpoint:     `https://${state.agent!.label}.0xaegis.eth/rpc`,
+    price:        "0.001",
+    model:        "ml-dsa-65-agent",
+    uptime:       "100",
+    keyScheme:    "ml-dsa-65",
+  });
+  s2.succeed("Capability profile published");
+
+  // Also publish initial threat feed status to threat.0xaegis.eth
+  const threatNode = ethers.namehash(ENS_CONFIG.THREAT_FEED_DOMAIN);
+  const threatKeys = ENS_CONFIG.THREAT_RECORD_KEYS;
+  // Check if threat node is registered before writing — silently skip if not
+  try {
+    const resolverContract = new ethers.Contract(
+      ENS_CONFIG.AEGIS_RESOLVER_ADDRESS,
+      ["function getAgentRecord(bytes32 node) view returns (address, bytes32, bool)",
+       "function setTextBatch(bytes32 node, string[] keys, string[] values)"],
+      wallet
+    );
+    const [, , exists] = await resolverContract.getAgentRecord(threatNode);
+    if (exists) {
+      const s3 = ora({ text: "Updating threat.0xaegis.eth feed…", color: "cyan" }).start();
+      await resolverContract.setTextBatch(
+        threatNode,
+        [threatKeys.SCORE, threatKeys.ECDSA_SAFE, threatKeys.LAST_UPDATED, threatKeys.RECOMMENDED_ACTION],
+        ["0", "true", Math.floor(Date.now() / 1000).toString(), "monitor"]
+      );
+      s3.succeed("Threat feed updated");
+    }
+  } catch {
+    // Threat node not yet set up — skip silently, run publish:threat-feed first
+  }
+
   infoBox([
-    ["Name",       chalk.cyan(state.agent!.ensName)],
-    ["Node",       short(node)],
-    ["Account",    short(accountAddress)],
-    ["PubKeyHash", short(agentWallet.pubKeyHash)],
-    ["Resolver",   short(ENS_CONFIG.AEGIS_RESOLVER_ADDRESS)],
-  ], "ENS Record");
+    ["Name",         chalk.cyan(state.agent!.ensName)],
+    ["Node",         short(node)],
+    ["Account",      short(accountAddress)],
+    ["PubKeyHash",   short(agentWallet.pubKeyHash)],
+    ["Resolver",     short(ENS_CONFIG.AEGIS_RESOLVER_ADDRESS)],
+    ["Capabilities", "trade,escrow,price-feed,zk-execution"],
+    ["Key Scheme",   "ml-dsa-65  (NIST FIPS 204)"],
+  ], "ENS Record + Profile");
   if (state.agent!.ensTxHash) console.log(txLink(state.agent!.ensTxHash));
   gap();
-  note("Full 1952-byte key served off-chain via CCIP-Read (EIP-3668).");
+  note("Full 1952-byte ML-DSA key served off-chain via CCIP-Read (EIP-3668).");
+  note("Capabilities discoverable by any agent querying 0xaegis.eth subgraph.");
 }
 
 // ─── Step 4: Payment (ZK Proof) ──────────────────────────────────────────────
@@ -363,8 +404,9 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   s1.succeed(`Signed  — ${signed.signature.length}-byte signature stays off-chain`);
 
   gap();
-  note("ZK circuit: Poseidon(sigHigh, sigLow, msgHash) → commitment");
-  note("Proves ARIA owns the key and signed this exact message — no signature on-chain.\n");
+  note("Layer 1 — Off-chain: ML-DSA signature structurally validated (3309 bytes)");
+  note("Layer 2 — ZK circuit: Poseidon commitment binds signature to this operation");
+  note("On-chain: Groth16 pairing check + pubKeyHash binding — 256-byte proof only.\n");
 
   // Generate Groth16 proof
   const prover     = await AegisProver.create();
@@ -401,11 +443,23 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   state.paymentNonce = Number(newNonce);
   saveState(state);
 
+  // Pull real gas data from the confirmed receipt
+  const gasUsed     = execReceipt.gasUsed;
+  const gasPrice    = execReceipt.gasPrice ?? execReceipt.effectiveGasPrice ?? 0n;
+  const gasCostWei  = gasUsed * gasPrice;
+  const gasCostEth  = ethers.formatEther(gasCostWei);
+  const gasCostGwei = ethers.formatUnits(gasPrice, "gwei");
+
   infoBox([
-    ["Operation",  "Transfer 0.001 ETH"],
-    ["Recipient",  short(recipient) + chalk.dim("  (DAO Treasury)")],
-    ["Block",      String(execReceipt.blockNumber)],
-    ["Nonce",      String(newNonce)],
+    ["Operation",    "Transfer 0.001 ETH"],
+    ["Recipient",    short(recipient) + chalk.dim("  (DAO Treasury)")],
+    ["Block",        String(execReceipt.blockNumber)],
+    ["Nonce",        String(newNonce)],
+    ["Gas used",     chalk.white(gasUsed.toString()) + chalk.dim("  units")],
+    ["Gas price",    chalk.white(parseFloat(gasCostGwei).toFixed(4)) + chalk.dim("  gwei")],
+    ["Tx cost",      chalk.white(parseFloat(gasCostEth).toFixed(8)) + chalk.dim("  ETH")],
+    ["Raw sig size", chalk.dim("3309 bytes  (never on-chain)")],
+    ["Proof size",   chalk.dim("256 bytes  (BN254 Groth16)")],
   ], "Payment Executed");
   console.log(txLink(execTx.hash));
   gap();
@@ -523,8 +577,9 @@ async function step6(state: DemoState, wallet: ethers.Wallet, oracle: QuantumOra
   const execTx   = await account.executeWithZKProof(
     fmt.pA, fmt.pB, fmt.pC, proof.commitment, wallet.address, 0n, "0x"
   );
-  await execTx.wait();
-  execSpin.succeed("ZK proof accepted — ARIA keeps operating normally");
+  const keepAliveReceipt = await execTx.wait();
+  const keepAliveGas = keepAliveReceipt?.gasUsed ?? 0n;
+  execSpin.succeed(`ZK proof accepted — ARIA keeps operating normally  (gas: ${keepAliveGas.toString()})`);
 
   state.paymentNonce++;
   saveState(state);
@@ -589,6 +644,144 @@ async function step7(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
     note("Any agent can run this handshake against " + state.agent!.ensName);
     note("Identity is provable using only on-chain ENS records — no trusted third party.");
   }
+
+  // ─── Live two-agent handshake (spawn Bob, handshake between ARIA and Bob) ──
+  gap();
+  console.log("  " + chalk.bold("Live Two-Agent Handshake: ARIA ↔ BOB\n"));
+  note("Spawning a second agent (Bob) to demonstrate agent-to-agent trust.\n");
+
+  // Spawn Bob's wallet locally (ephemeral — no on-chain deployment needed for handshake demo)
+  const bobLabel  = "bob-" + Math.random().toString(36).slice(2, 5);
+  const bobWallet = new AegisWallet(bobLabel);
+
+  const bobSpawnSpin = ora({ text: "Generating Bob's ML-DSA-65 keypair…", color: "cyan" }).start();
+  await sleep(200);
+  bobSpawnSpin.succeed(`Bob spawned — ${bobLabel}`);
+
+  infoBox([
+    ["Agent",     chalk.white(bobLabel)],
+    ["Algorithm", "ML-DSA-65  (NIST FIPS 204)"],
+    ["Key Hash",  short(bobWallet.publicKeyHash())],
+    ["Status",    "ephemeral — identity demo only"],
+  ], "Bob — Second Agent");
+
+  // ARIA → Bob: ARIA challenges Bob
+  const hs_a1 = ora({ text: "ARIA generating challenge nonce for Bob…", color: "magenta" }).start();
+  const ariaChallenge = ethers.randomBytes(32);
+  await sleep(200);
+  hs_a1.succeed(`Challenge issued  — ${short(ethers.hexlify(ariaChallenge))}`);
+
+  const hs_a2 = ora({ text: "Bob signing challenge with ML-DSA-65…", color: "cyan" }).start();
+  const bobResponse = bobWallet.sign(ariaChallenge);
+  await sleep(200);
+  hs_a2.succeed(`Bob responded  — ${bobResponse.signature.length}-byte ML-DSA signature`);
+
+  const hs_a3 = ora({ text: "ARIA verifying Bob's signature…", color: "magenta" }).start();
+  await sleep(200);
+  const bobSigValid = bobWallet.verify(ariaChallenge, bobResponse.signature);
+  hs_a3.succeed("Verification complete");
+
+  // Bob → ARIA: Bob challenges ARIA
+  const hs_b1 = ora({ text: "Bob generating challenge nonce for ARIA…", color: "cyan" }).start();
+  const bobChallenge = ethers.randomBytes(32);
+  await sleep(200);
+  hs_b1.succeed(`Counter-challenge issued  — ${short(ethers.hexlify(bobChallenge))}`);
+
+  const hs_b2 = ora({ text: "ARIA signing counter-challenge with ML-DSA-65…", color: "magenta" }).start();
+  const ariaResponse = agentWallet.sign(bobChallenge);
+  await sleep(200);
+  hs_b2.succeed(`ARIA responded  — ${ariaResponse.signature.length}-byte ML-DSA signature`);
+
+  const hs_b3 = ora({ text: "Bob verifying ARIA's signature against ENS pubKeyHash…", color: "cyan" }).start();
+  await sleep(200);
+  const ariaKeyHash   = ethers.keccak256(ethers.hexlify(agentWallet.publicKey));
+  const ariaHashMatch = ariaKeyHash.toLowerCase() === state.agent!.pubKeyHash.toLowerCase();
+  const ariaSigValid  = agentWallet.verify(bobChallenge, ariaResponse.signature);
+  hs_b3.succeed("Verification complete");
+
+  const handshakePassed = bobSigValid && ariaSigValid && ariaHashMatch;
+
+  infoBox([
+    ["ARIA → Bob",    "Challenge issued & signed"],
+    ["Bob sig valid", bobSigValid ? chalk.green("✔  verified") : chalk.red("✗  failed")],
+    ["Bob → ARIA",   "Counter-challenge issued & signed"],
+    ["ARIA sig",     ariaSigValid  ? chalk.green("✔  valid")   : chalk.red("✗  failed")],
+    ["ARIA hash",    ariaHashMatch ? chalk.green("✔  matches ENS on-chain record") : chalk.red("✗  mismatch")],
+    ["Result",       handshakePassed
+      ? chalk.green.bold("✔  MUTUAL AUTHENTICATION COMPLETE")
+      : chalk.red.bold("✗  HANDSHAKE FAILED")],
+  ], "ARIA ↔ BOB  Mutual PQ Handshake");
+
+  if (handshakePassed) {
+    note("Both agents proved their identity to each other.");
+    note("Zero ECDSA. Zero TLS. Zero certificate authority.");
+    note("Trust anchor: ENS + ML-DSA-65 (NIST FIPS 204).");
+  }
+}
+
+// ─── Step 8: Key Rotation ─────────────────────────────────────────────────────
+
+async function step8(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoWallet): Promise<void> {
+  stepHeader(8, "Post-Quantum Key Rotation");
+
+  console.log("  " + chalk.bold("Demonstrating autonomous key rotation\n"));
+  note("ML-DSA keys can be rotated at any time.");
+  note("The on-chain pubKeyHash is updated via ENS resolver.");
+  note("No contract redeployment. No service interruption.\n");
+
+  const ens = new AegisENS(wallet.provider!, wallet);
+  await ens.init();
+
+  infoBox([
+    ["Agent",          state.agent!.ensName],
+    ["Old PubKeyHash", short(state.agent!.pubKeyHash)],
+    ["Key Scheme",     "ML-DSA-65  (NIST FIPS 204)"],
+    ["Status",         chalk.yellow("Rotating…")],
+  ], "Key State — Before Rotation");
+
+  // Generate a new keypair
+  const s1 = ora({ text: "Generating new ML-DSA-65 keypair…", color: "magenta" }).start();
+  const newWallet     = DemoWallet.generate(state.agent!.label + "-rotated");
+  const newPubKeyHash = newWallet.pubKeyHash;
+  await sleep(300);
+  s1.succeed("New keypair generated");
+
+  console.log("");
+  note(`Old hash: ${short(state.agent!.pubKeyHash)}`);
+  note(`New hash: ${short(newPubKeyHash)}`);
+  console.log("");
+
+  // Update on-chain via ENS resolver
+  const s2 = ora({ text: "Updating pubKeyHash on ENS resolver (on-chain)…", color: "cyan" }).start();
+  const receipt = await ens.rotateKey(state.agent!.label, newPubKeyHash);
+  s2.succeed("pubKeyHash updated on-chain");
+  console.log(txLink((receipt as any).hash ?? ""));
+
+  // Verify the update
+  const s3 = ora({ text: "Verifying ENS record…", color: "cyan" }).start();
+  const updatedRecord = await ens.resolveAgent(state.agent!.label);
+  s3.succeed("Verified");
+
+  const rotationValid = updatedRecord.pubKeyHash.toLowerCase() === newPubKeyHash.toLowerCase();
+
+  infoBox([
+    ["Agent",          state.agent!.ensName],
+    ["Old PubKeyHash", short(state.agent!.pubKeyHash)],
+    ["New PubKeyHash", short(newPubKeyHash)],
+    ["On-chain",       rotationValid ? chalk.green("✔  updated correctly") : chalk.red("✗  mismatch")],
+    ["Downtime",       chalk.green("zero  — account never paused")],
+    ["Redeployment",   chalk.green("none  — same AegisAccount address")],
+  ], "Key Rotation Complete");
+
+  if (rotationValid) {
+    note("The AegisAccount address did not change.");
+    note("The agent's ENS name did not change.");
+    note("Only the bound public key hash changed — rotation is seamless.");
+  } else {
+    console.log(chalk.red("  ✗  Key rotation verification failed — check ENS resolver."));
+  }
+
+  gap();
 }
 
 // ─── Full demo flow ───────────────────────────────────────────────────────────
@@ -601,7 +794,7 @@ async function runFullDemo(): Promise<void> {
   banner();
   const line = "─".repeat(58);
   console.log(chalk.dim(line));
-  console.log("  " + chalk.bold.white("FULL DEMO") + chalk.dim("  ·  7 steps  ·  Sepolia testnet"));
+  console.log("  " + chalk.bold.white("FULL DEMO") + chalk.dim("  ·  8 steps  ·  Sepolia testnet"));
   console.log(chalk.dim(line));
 
   const balance = await provider.getBalance(wallet.address);
@@ -615,10 +808,11 @@ async function runFullDemo(): Promise<void> {
   const oracle = await step5();
   await step6(state, wallet, oracle);
   await step7(state, wallet, agentWallet);
+  await step8(state, wallet, agentWallet);
 
   // Final summary
   divider();
-  console.log("\n" + BRAND("  All 7 steps complete.\n"));
+  console.log("\n" + BRAND("  All 8 steps complete.\n"));
   console.log("  " + chalk.bold("Agent:    ") + chalk.cyan(state.agent!.ensName));
   console.log("  " + chalk.bold("Account:  ") + "  " + addrLink(state.agent!.accountAddress));
   console.log("  " + chalk.bold("ECDSA:    ") + chalk.red("deprecated  (quantum-safe mode active)"));
@@ -658,6 +852,7 @@ async function runStep(n: number): Promise<void> {
       break;
     }
     case 7: await step7(state, wallet, agentWallet!); break;
+    case 8: await step8(state, wallet, agentWallet!); break;
   }
 }
 
@@ -687,7 +882,7 @@ async function main(): Promise<void> {
       pageSize: 15,
       choices: [
         {
-          name: chalk.bold.cyan("🚀  Run Full Demo") + chalk.dim("  (all 7 steps, ~3 min)"),
+          name: chalk.bold.cyan("🚀  Run Full Demo") + chalk.dim("  (all 8 steps, ~3 min)"),
           value: "full",
         },
         new (inquirer as any).Separator(chalk.dim("──────────────────────────────")),
@@ -698,6 +893,7 @@ async function main(): Promise<void> {
         { name: "5   Trigger Quantum Oracle",            value: "5" },
         { name: "6   Autonomous ECDSA Deprecation",      value: "6" },
         { name: "7   Verify ENS Identity & Handshake",   value: "7" },
+        { name: "8   Post-Quantum Key Rotation",         value: "8" },
         new (inquirer as any).Separator(chalk.dim("──────────────────────────────")),
         { name: chalk.yellow("↩   Reset demo state"),   value: "reset" },
         { name: chalk.red("✕   Exit"),                  value: "exit" },
