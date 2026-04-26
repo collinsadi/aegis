@@ -52,13 +52,21 @@ app.use((err: any, _req: any, res: any, _next: any) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`[Aegis Gateway] Listening on :${PORT}`);
-  console.log(`  CCIP-Read: GET /ccip/:sender/:data.json`);
-  console.log(`  Register:  POST /register`);
-  console.log(`  Keys:      GET /keys`);
-  console.log(`  Health:    GET /health`);
-  console.log(`  Keys registered: ${KeyStore.count()}`);
+async function start() {
+  await KeyStore.init();
+
+  app.listen(PORT, () => {
+    console.log(`[Aegis Gateway] Listening on :${PORT}`);
+    console.log(`  CCIP-Read: GET /ccip/:sender/:data.json`);
+    console.log(`  Register:  POST /register`);
+    console.log(`  Keys:      GET /keys`);
+    console.log(`  Health:    GET /health`);
+  });
+}
+
+start().catch((err) => {
+  console.error("[Aegis Gateway] Startup failed:", err.message);
+  process.exit(1);
 });
 
 export default app;
