@@ -92,9 +92,9 @@ describe("AegisENSResolver", function () {
   it("pubKeyWithProof() should verify correct key and reject tampered key", async function () {
     const encoded = ethers.AbiCoder.defaultAbiCoder().encode(["bytes"], [fakePubKey]);
     const extraData = ethers.AbiCoder.defaultAbiCoder().encode(["bytes32"], [agentNode]);
+    // ethers.js automatically ABI-decodes the bytes memory return — no manual decode needed
     const result = await resolver.pubKeyWithProof(encoded, extraData);
-    const decoded = ethers.AbiCoder.defaultAbiCoder().decode(["bytes"], result);
-    expect(decoded[0]).to.equal(ethers.hexlify(fakePubKey));
+    expect(result).to.equal(ethers.hexlify(fakePubKey));
 
     // Tampered key should be rejected
     const tamperedKey = ethers.randomBytes(1952);
