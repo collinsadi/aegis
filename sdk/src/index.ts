@@ -18,6 +18,10 @@ export type { ProofInput, ProofOutput } from "./prover";
 // ENS — agent identity, discovery, oracle feed, and PQ handshake
 export { AegisENS } from "./ens";
 
+// Gateway — publish and rotate ML-DSA public keys on the CCIP-Read gateway
+export { AegisGateway } from "./gateway";
+export type { GatewayRegistrationResult } from "./gateway";
+
 // Oracle — quantum threat monitoring and autonomous ECDSA deprecation
 export { QuantumOracle } from "./oracle";
 export type { ThreatLevel, ThreatFactor } from "./oracle";
