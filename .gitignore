@@ -39,3 +39,4 @@ sdk/dist/
 
 # Hardhat Ignition deployment artifacts
 contracts/ignition/deployments/demo/.state.json
+contracts/ignition/deployments/
