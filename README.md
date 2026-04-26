@@ -141,16 +141,15 @@ ENS makes this possible without any central authority, certificate chain, or tru
 | `AegisFactory` | `0x529754f82E4cDFc7063b944D5A1F86138B115a40` | [View](https://sepolia.etherscan.io/address/0x529754f82E4cDFc7063b944D5A1F86138B115a40) |
 | `AegisENSResolver` | `0xD91ce30bc1B4bFe41c49A72AeAe221EFc760E30c` | [View](https://sepolia.etherscan.io/address/0xD91ce30bc1B4bFe41c49A72AeAe221EFc760E30c) |
 | `Groth16Verifier` | `0xf353d5e367e9Bd410A9324649a1529ebA3C91ef6` | [View](https://sepolia.etherscan.io/address/0xf353d5e367e9Bd410A9324649a1529ebA3C91ef6) |
+| `ThresholdOracle` | `0xB7cc1D4D49783f803f193b64a074249601C27187` | [View](https://sepolia.etherscan.io/address/0xB7cc1D4D49783f803f193b64a074249601C27187) |
 | `AegisAccount` (demo instance) | `0x0a23Fa822D8BF5e0Bc13c79817a641e586cE9D38` | [View](https://sepolia.etherscan.io/address/0x0a23Fa822D8BF5e0Bc13c79817a641e586cE9D38) |
 | `AegisAccount` (demo instance) | `0x7DcCcE806abE51d1c78cBa3A39F35b6d9bCE0780` | [View](https://sepolia.etherscan.io/address/0x7DcCcE806abE51d1c78cBa3A39F35b6d9bCE0780) |
 
 > `AegisAccount` contracts are deployed per-agent via `AegisFactory`. Each agent gets its own wallet at a deterministic CREATE2 address. ENS name: `0xaegis.eth` — owner `0xdD3EeF74f9B68025CEddA2406B70e51a2Ed6A0b9`.
 
----
 
 ## On-Chain Transactions — Sepolia Testnet
 
-### ENS Setup
 
 | # | Action | Function | Contract | Tx |
 |---|---|---|---|---|
@@ -159,7 +158,6 @@ ENS makes this possible without any central authority, certificate chain, or tru
 | 3 | Set Resolver | `setResolver(bytes32,address)` | ENS Registry | [0x980384…](https://sepolia.etherscan.io/tx/0x980384fdce8b31bd68d675e8950220dda6a44472bd0b529f158095b79e657153) |
 | 4 | Set `subdomainRegistrar` | `setText(bytes32,string,string)` | AegisENSResolver | [0xe7931b…](https://sepolia.etherscan.io/tx/0xe7931bf58c08a28d5f859db1bb34e4db4f8d2d605f6c015eebd320fd6fb41c31) |
 
-### Demo Run (End-to-End, Fresh Agent `aria-f0pi`)
 
 | # | Action | Function | Contract | Tx |
 |---|---|---|---|---|
@@ -168,6 +166,7 @@ ENS makes this possible without any central authority, certificate chain, or tru
 | 7 | ZK Payment (0.001 ETH) | `executeWithZKProof(...)` | AegisAccount | [0xc34e0a…](https://sepolia.etherscan.io/tx/0xc34e0ab35fd9a14bdc1eda1f7dbd273753f2009d95ba61cecad21c0831ca143b) |
 | 8 | Deprecate ECDSA | `deprecateECDSA()` | AegisAccount | included in tx above |
 | 9 | ZK Proof post-deprecation | `executeWithZKProof(...)` | AegisAccount | [0x282035…](https://sepolia.etherscan.io/tx/0x282035270471a2dd56daed2a2fa4d264e9b735c22f46fb493884caac0ea046b4) |
+| 10 | Update Gateway URL | `setGatewayUrl(...)` | AegisENSResolver | [0xbdac9a…](https://sepolia.etherscan.io/tx/0xbdac9ab9d6e703205e283471904ddfe06da197ac61fbdfa4684d913a14b6e8d8) |
 
 All transactions are on Ethereum Sepolia (chain ID 11155111). Proof generation is off-chain (~0.4 s). On-chain verification uses the BN254 Groth16 pairing check at ~200k gas.
 
