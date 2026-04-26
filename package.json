@@ -18,7 +18,11 @@
     "deploy:factory:sepolia": "cd contracts && npm run deploy:factory:sepolia",
     "demo": "npx ts-node demo/index.ts",
     "demo:hardhat": "npx ts-node scripts/demo.ts",
-    "setup": "npm install && cd contracts && npm install && cd ../sdk && npm install",
+    "publish:threat-feed": "npx ts-node scripts/publish-threat-feed.ts",
+    "server:dev":   "cd server && npm run dev",
+    "server:build": "cd server && npm run build",
+    "server:start": "cd server && npm run start",
+    "setup": "npm install && cd contracts && npm install && cd ../sdk && npm install && cd ../server && npm install",
     "prepare": "npm run copy:circuits && npm run compile:contracts && npm run export:abis && npm run build:sdk",
     "ens:setup": "npx ts-node scripts/ens-setup.ts",
     "ens:register-agent": "npx ts-node scripts/ens-register-agent.ts"
