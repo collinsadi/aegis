@@ -61,7 +61,9 @@ Agent spawns → ML-DSA keypair generated
 Signs operation (3309-byte signature, off-chain)
      │
      ▼
-ZK circuit: Poseidon commitment + Groth16 proof (~20s, off-chain)
+Off-chain: ML-DSA signature verified for structural validity
+ZK circuit: Poseidon commitment binds signature to operation (~20s, off-chain)
+On-chain: Groth16 proof verified — commitment + pubKeyHash checked via BN254
      │
      ▼
 On-chain: 256-byte proof verified via BN254 pairing (~200k gas)
