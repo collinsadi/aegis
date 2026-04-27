@@ -27,6 +27,7 @@ import morgan  from "morgan";
 import { corsMiddleware } from "./middleware/cors";
 import ccipRouter from "./routes/ccip";
 import { KeyStore } from "./services/keyStore";
+import { INTEGRATIONS } from "./config/integrations";
 
 const PORT = parseInt(process.env.PORT ?? "8080", 10);
 const app  = express();
@@ -61,6 +62,8 @@ async function start() {
     console.log(`  Register:  POST /register`);
     console.log(`  Keys:      GET /keys`);
     console.log(`  Health:    GET /health`);
+    console.log(`  0G Storage:  ${INTEGRATIONS.ZERO_G.ENABLED ? "enabled ✓" : "disabled (in-memory fallback)"}`);
+    console.log(`  0G Compute:  ${INTEGRATIONS.ZERO_G.ENABLED ? "enabled ✓" : "disabled (hardcoded oracle weights)"}`);
   });
 }
 
