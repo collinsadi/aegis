@@ -24,6 +24,10 @@ const EXPORTS: AbiExport[] = [
     outputName: "AegisFactory.json",
   },
   {
+    artifactPath: "ThresholdOracle.sol/ThresholdOracle.json",
+    outputName: "ThresholdOracle.json",
+  },
+  {
     artifactPath: "verifier/Groth16Verifier.sol/Groth16Verifier.json",
     outputName: "Groth16Verifier.json",
   },
