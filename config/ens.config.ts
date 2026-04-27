@@ -7,6 +7,9 @@
  * All ENS-related values across the entire codebase are imported from here.
  */
 
+import dotenv from "dotenv";
+dotenv.config({ path: "../.env" });
+
 export const ENS_CONFIG = {
   /**
    * The parent ENS domain owned by the Aegis protocol.
@@ -93,5 +96,32 @@ export const ENS_CONFIG = {
     TRIGGERED_BY: "triggeredBy",
     /** Human-readable recommended action string */
     RECOMMENDED_ACTION: "recommendedAction",
+  },
+} as const;
+
+/**
+ * Third-party integrations — each has an ENABLED flag.
+ * Set the corresponding env vars and flip ENABLED to true.
+ * Core Aegis behavior is unaffected when any integration is disabled.
+ */
+export const INTEGRATIONS = {
+  ZERO_G: {
+    /**
+     * Master switch. Set ENABLE_ZERO_G=true in .env to activate.
+     * When false: gateway uses in-memory key store, oracle uses hardcoded weights.
+     * When true:  gateway persists keys on 0G Storage, oracle scores via 0G Compute LLM.
+     */
+    ENABLED: process.env.ENABLE_ZERO_G === "true",
+
+    // 0G Storage — TypeScript SDK endpoints
+    STORAGE_RPC:     process.env.ZERO_G_STORAGE_RPC     ?? "https://evmrpc-testnet.0g.ai",
+    STORAGE_INDEXER: process.env.ZERO_G_STORAGE_INDEXER ?? "https://indexer-storage-testnet-turbo.0g.ai",
+
+    // 0G Compute — OpenAI-compatible inference endpoint
+    COMPUTE_ENDPOINT: process.env.ZERO_G_COMPUTE_ENDPOINT ?? "https://api.0g.ai/v1",
+    COMPUTE_MODEL:    process.env.ZERO_G_COMPUTE_MODEL    ?? "qwen3.6-plus",
+
+    // Funded 0G wallet for paying storage transaction fees
+    PRIVATE_KEY: process.env.ZERO_G_PRIVATE_KEY ?? "",
   },
 } as const;
