@@ -26,5 +26,8 @@ export type { GatewayRegistrationResult } from "./gateway";
 export { QuantumOracle } from "./oracle";
 export type { ThreatLevel, ThreatFactor } from "./oracle";
 
+// 0G-powered oracle extension — AI threat scoring via 0G Compute (TEE-verified)
+export { ZeroGQuantumOracle } from "./zerogOracle";
+
 // Config — ENS constants exported for consumers who need them
 export { ENS_CONFIG } from "../../config/ens.config";
