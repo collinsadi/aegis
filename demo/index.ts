@@ -472,7 +472,9 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
 async function step5(): Promise<QuantumOracle> {
   stepHeader(5, "Quantum Threat Detected");
 
-  const oracle = new QuantumOracle();
+  const { ZeroGQuantumOracle } = await import("../sdk/src/zerogOracle");
+  const { INTEGRATIONS }       = await import("../config/ens.config");
+  const oracle = new ZeroGQuantumOracle();
   console.log("  " + chalk.bold("Oracle monitoring live threat signals…\n"));
 
   const factors = [
@@ -503,6 +505,13 @@ async function step5(): Promise<QuantumOracle> {
     ["Status",        chalk.red.bold("⚠  CRITICAL — ECDSA deprecation required")],
     ["Triggered by",  "nist_pqc + logical_qubits + secp256k1_cve"],
   ], "Oracle Report");
+
+  // If 0G is enabled, override the displayed score with the LLM-computed score
+  if (INTEGRATIONS.ZERO_G.ENABLED) {
+    const zgSpin = ora({ text: "Querying 0G Compute for AI threat assessment…", color: "cyan" }).start();
+    const zgScore = await oracle.computeThreatScore();
+    zgSpin.succeed(`0G Compute threat score: ${chalk.red.bold(zgScore)}/100  (verifiable inference via TEE)`);
+  }
 
   return oracle;
 }
@@ -844,7 +853,8 @@ async function runStep(n: number): Promise<void> {
     case 4: await step4(state, wallet, agentWallet!); break;
     case 5: await step5(); break;
     case 6: {
-      const oracle = new QuantumOracle();
+      const { ZeroGQuantumOracle } = await import("../sdk/src/zerogOracle");
+      const oracle = new ZeroGQuantumOracle();
       oracle.activateFactor("nist_pqc_fully_deployed");
       oracle.activateFactor("logical_qubits_above_1000");
       oracle.activateFactor("secp256k1_cve_published");
