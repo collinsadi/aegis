@@ -22,7 +22,7 @@
 
 import { Router, Request, Response } from "express";
 import { ethers } from "ethers";
-import { KeyStore } from "../services/keyStore";
+import { activeKeyStore as KeyStore } from "../services/keyStoreFactory";
 import { verifyKeyAgainstChain } from "../services/onChain";
 
 const router = Router();
