@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "public_keys" ALTER COLUMN "registeredAt" SET DATA TYPE TIMESTAMP(3),
+ALTER COLUMN "updatedAt" SET DATA TYPE TIMESTAMP(3);
