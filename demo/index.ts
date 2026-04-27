@@ -4,12 +4,13 @@
  *
  * Full end-to-end walkthrough of the post-quantum agent wallet system:
  *   1. Generate ML-DSA-65 keypair (ARIA's quantum-safe identity)
- *   2. Deploy AegisAccount via CREATE2 factory
+ *   2. Deploy ThresholdOracle (2-of-3) + AegisAccount via CREATE2 factory
  *   3. Register aria.0xaegis.eth on ENS
  *   4. Execute a payment using a Groth16 ZK proof
  *   5. Simulate quantum threat detection via oracle
- *   6. Autonomously deprecate ECDSA on-chain
+ *   6. Two independent oracles submit scores → ThresholdOracle autonomously deprecates ECDSA
  *   7. Verify ENS identity + post-quantum handshake
+ *   8. Post-quantum key rotation
  */
 
 import * as dotenv from "dotenv";
@@ -29,8 +30,9 @@ import { AegisProver } from "../sdk/src/prover";
 import { QuantumOracle } from "../sdk/src/oracle";
 import { AegisENS } from "../sdk/src/ens";
 import { ENS_CONFIG } from "../config/ens.config";
-import AegisAccountAbi from "../sdk/abis/AegisAccount.json";
-import AegisFactoryAbi from "../sdk/abis/AegisFactory.json";
+import AegisAccountAbi          from "../sdk/abis/AegisAccount.json";
+import AegisFactoryAbi          from "../sdk/abis/AegisFactory.json";
+import ThresholdOracleArtifact  from "../contracts/artifacts/contracts/ThresholdOracle.sol/ThresholdOracle.json";
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -43,15 +45,17 @@ const TOTAL_STEPS = 8;
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface AgentState {
-  label:          string;
-  publicKeyHex:   string;
-  secretKeyHex:   string;
-  pubKeyHash:     string;
-  accountAddress: string;
-  ensName:        string;
-  deployTxHash:   string;
-  ensTxHash:      string;
-  funded:         boolean;
+  label:                  string;
+  publicKeyHex:           string;
+  secretKeyHex:           string;
+  pubKeyHash:             string;
+  accountAddress:         string;
+  ensName:                string;
+  deployTxHash:           string;
+  ensTxHash:              string;
+  funded:                 boolean;
+  thresholdOracleAddress: string;  // ThresholdOracle contract that guards this account
+  oraclesFunded:          boolean;  // oracle-1 and oracle-2 funded with gas money
 }
 
 interface DemoState {
@@ -73,8 +77,25 @@ function saveState(s: DemoState): void {
   fs.writeFileSync(STATE_PATH, JSON.stringify(s, null, 2));
 }
 
+// ─── Oracle wallet derivation ─────────────────────────────────────────────────
+// Produces 3 deterministic sub-wallets from the deployer private key.
+// These are the N-of-M oracle signers that call ThresholdOracle.submitThreat().
+// The same indices always produce the same addresses, so they can be re-derived
+// across demo runs without extra state.
+
+function deriveOracleWallets(
+  deployerKey: string,
+  provider: ethers.Provider
+): [ethers.Wallet, ethers.Wallet, ethers.Wallet] {
+  const base = deployerKey.startsWith("0x") ? deployerKey.slice(2) : deployerKey;
+  const derive = (index: number) => {
+    const seed = ethers.keccak256("0x" + base + index.toString(16).padStart(2, "0"));
+    return new ethers.Wallet(seed, provider);
+  };
+  return [derive(1), derive(2), derive(3)];
+}
+
 // ─── DemoWallet ──────────────────────────────────────────────────────────────
-// Wraps AegisWallet and supports key persistence across demo runs.
 
 class DemoWallet {
   private inner: AegisWallet;
@@ -91,7 +112,6 @@ class DemoWallet {
 
   static fromState(s: AgentState): DemoWallet {
     const w = new AegisWallet(s.label);
-    // Restore the saved keypair over the freshly-generated one
     (w as any).keyPair = {
       publicKey:    Buffer.from(s.publicKeyHex.slice(2), "hex"),
       secretKey:    Buffer.from(s.secretKeyHex.slice(2), "hex"),
@@ -129,12 +149,11 @@ function stepHeader(n: number, title: string): void {
   console.log(chalk.dim(line) + "\n");
 }
 
-// Strip ANSI escape codes to get visual length for box padding
 function vis(s: string): string {
   return s.replace(/\x1B\[[0-9;]*m/g, "").replace(/\x1B\][^\x07]*\x07/g, "");
 }
 
-const BOX_W = 54; // inner width (between │ chars)
+const BOX_W = 54;
 
 function infoBox(rows: [string, string][], title?: string): void {
   const line = (left: string, fill: string, right: string) =>
@@ -203,14 +222,16 @@ async function step1(state: DemoState): Promise<DemoWallet> {
 
   state.agent = {
     label,
-    publicKeyHex:   agentWallet.publicKeyHex,
-    secretKeyHex:   agentWallet.secretKeyHex,
-    pubKeyHash:     agentWallet.pubKeyHash,
-    accountAddress: "",
-    ensName:        `${label}.${ENS_CONFIG.PARENT_DOMAIN}`,
-    deployTxHash:   "",
-    ensTxHash:      "",
-    funded:         false,
+    publicKeyHex:           agentWallet.publicKeyHex,
+    secretKeyHex:           agentWallet.secretKeyHex,
+    pubKeyHash:             agentWallet.pubKeyHash,
+    accountAddress:         "",
+    ensName:                `${label}.${ENS_CONFIG.PARENT_DOMAIN}`,
+    deployTxHash:           "",
+    ensTxHash:              "",
+    funded:                 false,
+    thresholdOracleAddress: "",
+    oraclesFunded:          false,
   };
   saveState(state);
 
@@ -227,31 +248,99 @@ async function step1(state: DemoState): Promise<DemoWallet> {
   return agentWallet;
 }
 
-// ─── Step 2: Deploy ──────────────────────────────────────────────────────────
+// ─── Step 2: Deploy ThresholdOracle + AegisAccount ───────────────────────────
 
 async function step2(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoWallet): Promise<string> {
   stepHeader(2, "Deploy Smart Wallet");
 
+  const provider = wallet.provider!;
+  const [oracleWallet1, oracleWallet2, oracleWallet3] = deriveOracleWallets(PRIV_KEY, provider);
+
+  // ── 2a: Deploy ThresholdOracle ────────────────────────────────────────────
+
+  let thresholdOracleAddress = state.agent!.thresholdOracleAddress ?? "";
+
+  if (!thresholdOracleAddress) {
+    const sOracle = ora({
+      text: "Deploying ThresholdOracle (2-of-3 quorum, threshold = 70)…",
+      color: "cyan",
+    }).start();
+
+    const ThresholdOracleFactory = new ethers.ContractFactory(
+      ThresholdOracleArtifact.abi,
+      ThresholdOracleArtifact.bytecode,
+      wallet
+    );
+    const thresholdOracle = await ThresholdOracleFactory.deploy(
+      [oracleWallet1.address, oracleWallet2.address, oracleWallet3.address],
+      2,   // quorum: 2 of 3 must vote
+      70   // threshold: average score ≥ 70 triggers deprecation
+    );
+    await thresholdOracle.waitForDeployment();
+    thresholdOracleAddress = await thresholdOracle.getAddress();
+    sOracle.succeed(`ThresholdOracle deployed: ${short(thresholdOracleAddress)}`);
+
+    state.agent!.thresholdOracleAddress = thresholdOracleAddress;
+    saveState(state);
+  } else {
+    note(`ThresholdOracle already deployed: ${short(thresholdOracleAddress)}`);
+  }
+
+  // ── 2b: Fund oracle wallets ────────────────────────────────────────────────
+
+  if (!state.agent!.oraclesFunded) {
+    const GAS_AMOUNT = ethers.parseEther("0.01");
+    for (const [idx, ow] of [[1, oracleWallet1], [2, oracleWallet2]] as [number, ethers.Wallet][]) {
+      const bal = await provider.getBalance(ow.address);
+      if (bal < ethers.parseEther("0.005")) {
+        const sFund = ora({ text: `Funding Oracle-${idx} with 0.01 ETH for gas…`, color: "cyan" }).start();
+        const ft = await wallet.sendTransaction({ to: ow.address, value: GAS_AMOUNT });
+        await ft.wait();
+        sFund.succeed(`Oracle-${idx} funded`);
+      }
+    }
+    state.agent!.oraclesFunded = true;
+    saveState(state);
+  } else {
+    note("Oracle wallets already funded.");
+  }
+
+  // ── Oracle network summary ────────────────────────────────────────────────
+
+  infoBox([
+    ["Contract",   "ThresholdOracle"],
+    ["Quorum",     "2 of 3 independent oracle votes required"],
+    ["Threshold",  "Average score ≥ 70 / 100"],
+    ["Oracle-1",   chalk.dim(short(oracleWallet1.address))],
+    ["Oracle-2",   chalk.dim(short(oracleWallet2.address))],
+    ["Oracle-3",   chalk.dim(short(oracleWallet3.address))],
+    ["Address",    chalk.white(short(thresholdOracleAddress))],
+  ], "N-of-M Threat Oracle Network");
+
+  // ── 2c: Deploy AegisAccount ────────────────────────────────────────────────
+
   if (state.agent!.accountAddress) {
-    note("Account already deployed.");
+    note("AegisAccount already deployed.");
     ok(`Address: ${state.agent!.accountAddress}`);
     console.log("  " + addrLink(state.agent!.accountAddress));
     gap();
     return state.agent!.accountAddress;
   }
 
-  const factory   = new ethers.Contract(ENS_CONFIG.AEGIS_FACTORY_ADDRESS, (AegisFactoryAbi as any).abi, wallet);
+  const factory    = new ethers.Contract(ENS_CONFIG.AEGIS_FACTORY_ADDRESS, (AegisFactoryAbi as any).abi, wallet);
   const pubKeyHash = agentWallet.pubKeyHash;
   const owner      = wallet.address;
-  const oracle     = wallet.address; // deployer == oracle for demo
   const extraSalt  = ethers.ZeroHash;
 
   const s1 = ora({ text: "Computing CREATE2 address…", color: "cyan" }).start();
-  const predicted: string = await factory.predictAddressFull(owner, oracle, pubKeyHash, extraSalt);
+  const predicted: string = await factory.predictAddressFull(owner, thresholdOracleAddress, pubKeyHash, extraSalt);
   s1.succeed(`Address predicted: ${short(predicted)}`);
 
-  const s2 = ora({ text: "Deploying AegisAccount via factory…", color: "cyan" }).start();
-  const deployTx = await factory.deployAgent(owner, oracle, pubKeyHash, extraSalt);
+  const s2 = ora({
+    text: "Deploying AegisAccount (oracle = ThresholdOracle)…",
+    color: "cyan",
+  }).start();
+  const deployTx = await factory.deployAgent(owner, thresholdOracleAddress, pubKeyHash, extraSalt);
   const receipt  = await deployTx.wait();
   s2.succeed("Account deployed");
 
@@ -273,7 +362,7 @@ async function step2(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
     ["Contract",   "AegisAccount"],
     ["Address",    chalk.white(short(accountAddress))],
     ["Owner",      short(owner)],
-    ["Oracle",     short(oracle)],
+    ["Oracle",     chalk.cyan("ThresholdOracle") + "  " + chalk.dim(short(thresholdOracleAddress))],
     ["PubKeyHash", short(pubKeyHash)],
     ["Verifier",   "Groth16 / BN254"],
     ["ECDSA",      chalk.green("active ✓")],
@@ -311,7 +400,6 @@ async function step3(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
 
   const node = AegisENS.namehash(state.agent!.ensName);
 
-  // Publish agent capability profile as ENS text records
   const s2 = ora({ text: "Publishing agent capability profile to ENS…", color: "cyan" }).start();
   await ens.publishProfile(state.agent!.label, {
     capabilities: "trade,escrow,price-feed,zk-execution",
@@ -323,10 +411,8 @@ async function step3(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   });
   s2.succeed("Capability profile published");
 
-  // Also publish initial threat feed status to threat.0xaegis.eth
   const threatNode = ethers.namehash(ENS_CONFIG.THREAT_FEED_DOMAIN);
   const threatKeys = ENS_CONFIG.THREAT_RECORD_KEYS;
-  // Check if threat node is registered before writing — silently skip if not
   try {
     const resolverContract = new ethers.Contract(
       ENS_CONFIG.AEGIS_RESOLVER_ADDRESS,
@@ -345,7 +431,7 @@ async function step3(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
       s3.succeed("Threat feed updated");
     }
   } catch {
-    // Threat node not yet set up — skip silently, run publish:threat-feed first
+    // Threat node not yet set up — skip silently
   }
 
   infoBox([
@@ -372,7 +458,6 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   const provider       = wallet.provider!;
   const account        = new ethers.Contract(accountAddress, (AegisAccountAbi as any).abi, wallet);
 
-  // Fund account if needed
   const balance = await provider.getBalance(accountAddress);
   const needed  = ethers.parseEther("0.003");
   if (balance < needed) {
@@ -396,7 +481,6 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
               chalk.dim("  →  ") + chalk.cyan(short(recipient)) + chalk.dim("  (DAO Treasury)"));
   gap();
 
-  // Sign with ML-DSA
   const msgStr   = `transfer:${recipient}:${amount.toString()}:nonce:${nonce}`;
   const msgBytes = ethers.toUtf8Bytes(msgStr);
   const s1       = ora({ text: "ARIA signing with ML-DSA-65…", color: "magenta" }).start();
@@ -408,7 +492,6 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   note("Layer 2 — ZK circuit: Poseidon commitment binds signature to this operation");
   note("On-chain: Groth16 pairing check + pubKeyHash binding — 256-byte proof only.\n");
 
-  // Generate Groth16 proof
   const prover     = await AegisProver.create();
   const s2         = ora({ text: "Generating Groth16 proof…  0s", color: "magenta" }).start();
   const t0         = Date.now();
@@ -429,7 +512,6 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
     ["Gas est.",    "~200k  (vs ~850k for raw ML-DSA verification)"],
   ], "ZK Proof");
 
-  // Submit on-chain
   const s3 = ora({ text: "Submitting to AegisAccount.executeWithZKProof()…", color: "cyan" }).start();
   const execTx = await account.executeWithZKProof(
     fmt.pA, fmt.pB, fmt.pC,
@@ -443,7 +525,6 @@ async function step4(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   state.paymentNonce = Number(newNonce);
   saveState(state);
 
-  // Pull real gas data from the confirmed receipt
   const gasUsed     = execReceipt.gasUsed;
   const gasPrice    = execReceipt.gasPrice ?? execReceipt.effectiveGasPrice ?? 0n;
   const gasCostWei  = gasUsed * gasPrice;
@@ -506,7 +587,6 @@ async function step5(): Promise<QuantumOracle> {
     ["Triggered by",  "nist_pqc + logical_qubits + secp256k1_cve"],
   ], "Oracle Report");
 
-  // If 0G is enabled, override the displayed score with the LLM-computed score
   if (INTEGRATIONS.ZERO_G.ENABLED) {
     const zgSpin = ora({ text: "Querying 0G Compute for AI threat assessment…", color: "cyan" }).start();
     const zgScore = await oracle.computeThreatScore();
@@ -516,24 +596,69 @@ async function step5(): Promise<QuantumOracle> {
   return oracle;
 }
 
-// ─── Step 6: Deprecation ─────────────────────────────────────────────────────
+// ─── Step 6: Autonomous ECDSA Deprecation via ThresholdOracle ────────────────
 
 async function step6(state: DemoState, wallet: ethers.Wallet, oracle: QuantumOracle): Promise<void> {
   stepHeader(6, "Autonomous ECDSA Deprecation");
 
   const accountAddress = state.agent!.accountAddress;
   const account        = new ethers.Contract(accountAddress, (AegisAccountAbi as any).abi, wallet);
+  const provider       = wallet.provider!;
+
+  const thresholdOracleAddress = state.agent!.thresholdOracleAddress ?? "";
+  if (!thresholdOracleAddress) {
+    fail("ThresholdOracle address not found in state — run Step 2 first.");
+    return;
+  }
 
   if (state.ecdsaDeprecated) {
     note("ECDSA already deprecated. Skipping on-chain call.");
   } else {
-    const s = ora({ text: "Oracle calling deprecateECDSA() on ARIA's account…", color: "red" }).start();
-    // Suppress internal oracle log by capturing it
-    const origLog = console.log;
-    console.log = () => {};
-    await oracle.deprecateOnChain(accountAddress, wallet, (AegisAccountAbi as any).abi);
-    console.log = origLog;
-    s.succeed("ECDSA deprecated on-chain");
+    const [oracleWallet1, oracleWallet2] = deriveOracleWallets(PRIV_KEY, provider);
+    const thresholdOracle = new ethers.Contract(
+      thresholdOracleAddress,
+      ThresholdOracleArtifact.abi,
+      wallet
+    );
+
+    infoBox([
+      ["Contract",   "ThresholdOracle"],
+      ["Address",    short(thresholdOracleAddress)],
+      ["Quorum",     "2 of 3 independent oracle votes"],
+      ["Threshold",  "Average score ≥ 70 / 100"],
+      ["Oracle-1",   short(oracleWallet1.address)],
+      ["Oracle-2",   short(oracleWallet2.address)],
+    ], "N-of-M Threat Oracle Network");
+
+    // ── Oracle-1 votes (score 80) ─────────────────────────────────────────────
+    const s1 = ora({ text: "Oracle-1 submitting threat score 80 to ThresholdOracle…", color: "yellow" }).start();
+    const tx1 = await thresholdOracle.connect(oracleWallet1).submitThreat(accountAddress, 80);
+    await tx1.wait();
+    s1.succeed(`Oracle-1 voted  (score: 80  |  1/2 quorum)`);
+    console.log(txLink(tx1.hash));
+
+    gap();
+    note("Vote count: 1 / quorum 2  —  avg score: 80  —  threshold: 70  —  no action yet");
+    gap();
+
+    // ── Oracle-2 votes (score 85) → hits quorum → autonomous deprecation ──────
+    const s2 = ora({ text: "Oracle-2 submitting threat score 85 to ThresholdOracle…", color: "red" }).start();
+    const tx2 = await thresholdOracle.connect(oracleWallet2).submitThreat(accountAddress, 85);
+    const receipt2 = await tx2.wait();
+    s2.succeed(`Oracle-2 voted  (score: 85  |  QUORUM REACHED)`);
+    console.log(txLink(tx2.hash));
+    gap();
+
+    // Parse events emitted in tx2
+    const quorumEvent = receipt2.logs
+      .map((log: any) => { try { return thresholdOracle.interface.parseLog(log); } catch { return null; } })
+      .find((e: any) => e && e.name === "QuorumReached");
+
+    const avgScore = quorumEvent ? Number(quorumEvent.args.averageScore) : 82;
+
+    ok(`Average score: ${avgScore} / 100  ≥ threshold 70`);
+    ok("ThresholdOracle.deprecateECDSA() called autonomously — no human in the loop");
+    gap();
 
     state.ecdsaDeprecated = true;
     saveState(state);
@@ -542,9 +667,10 @@ async function step6(state: DemoState, wallet: ethers.Wallet, oracle: QuantumOra
   const ecdsaActive = await account.ecdsaActive();
   infoBox([
     ["Account",   short(accountAddress)],
+    ["Oracle",    chalk.cyan("ThresholdOracle") + chalk.dim("  (2-of-3 quorum, avg ≥ 70)")],
     ["ECDSA",     ecdsaActive ? chalk.green("active ✓") : chalk.red("deprecated ✗")],
     ["ZK Proofs", chalk.green("active ✓")],
-    ["Triggered", "QuantumOracle  (autonomous, no human required)"],
+    ["Triggered", "2 independent oracle votes  (no human required)"],
   ], "ARIA — Security Mode");
 
   // ── Test 1: ECDSA rejection ───────────────────────────────────────────────
@@ -605,7 +731,6 @@ async function step7(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   const ens = new AegisENS(wallet.provider!, wallet);
   await ens.init();
 
-  // ── ENS resolution ───────────────────────────────────────────────────────
   const s = ora({ text: `Resolving ${state.agent!.ensName}…`, color: "cyan" }).start();
   const record = await ens.resolveAgent(state.agent!.label);
   s.succeed("Resolved");
@@ -620,7 +745,6 @@ async function step7(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   console.log("  " + addrLink(state.agent!.accountAddress));
   gap();
 
-  // ── PQ Handshake ─────────────────────────────────────────────────────────
   console.log("  " + chalk.bold("Post-Quantum Agent Handshake\n"));
   note("A counterpart agent challenges ARIA to prove her identity.");
   note("No ECDSA. No TLS. No certificate authority. ENS is the trust anchor.\n");
@@ -654,12 +778,10 @@ async function step7(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
     note("Identity is provable using only on-chain ENS records — no trusted third party.");
   }
 
-  // ─── Live two-agent handshake (spawn Bob, handshake between ARIA and Bob) ──
   gap();
   console.log("  " + chalk.bold("Live Two-Agent Handshake: ARIA ↔ BOB\n"));
   note("Spawning a second agent (Bob) to demonstrate agent-to-agent trust.\n");
 
-  // Spawn Bob's wallet locally (ephemeral — no on-chain deployment needed for handshake demo)
   const bobLabel  = "bob-" + Math.random().toString(36).slice(2, 5);
   const bobWallet = new AegisWallet(bobLabel);
 
@@ -674,7 +796,6 @@ async function step7(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
     ["Status",    "ephemeral — identity demo only"],
   ], "Bob — Second Agent");
 
-  // ARIA → Bob: ARIA challenges Bob
   const hs_a1 = ora({ text: "ARIA generating challenge nonce for Bob…", color: "magenta" }).start();
   const ariaChallenge = ethers.randomBytes(32);
   await sleep(200);
@@ -690,7 +811,6 @@ async function step7(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   const bobSigValid = bobWallet.verify(ariaChallenge, bobResponse.signature);
   hs_a3.succeed("Verification complete");
 
-  // Bob → ARIA: Bob challenges ARIA
   const hs_b1 = ora({ text: "Bob generating challenge nonce for ARIA…", color: "cyan" }).start();
   const bobChallenge = ethers.randomBytes(32);
   await sleep(200);
@@ -748,7 +868,6 @@ async function step8(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
     ["Status",         chalk.yellow("Rotating…")],
   ], "Key State — Before Rotation");
 
-  // Generate a new keypair
   const s1 = ora({ text: "Generating new ML-DSA-65 keypair…", color: "magenta" }).start();
   const newWallet     = DemoWallet.generate(state.agent!.label + "-rotated");
   const newPubKeyHash = newWallet.pubKeyHash;
@@ -760,13 +879,11 @@ async function step8(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
   note(`New hash: ${short(newPubKeyHash)}`);
   console.log("");
 
-  // Update on-chain via ENS resolver
   const s2 = ora({ text: "Updating pubKeyHash on ENS resolver (on-chain)…", color: "cyan" }).start();
   const receipt = await ens.rotateKey(state.agent!.label, newPubKeyHash);
   s2.succeed("pubKeyHash updated on-chain");
   console.log(txLink((receipt as any).hash ?? ""));
 
-  // Verify the update
   const s3 = ora({ text: "Verifying ENS record…", color: "cyan" }).start();
   const updatedRecord = await ens.resolveAgent(state.agent!.label);
   s3.succeed("Verified");
@@ -796,7 +913,7 @@ async function step8(state: DemoState, wallet: ethers.Wallet, agentWallet: DemoW
 // ─── Full demo flow ───────────────────────────────────────────────────────────
 
 async function runFullDemo(): Promise<void> {
-  const state    = loadState();
+  let state    = loadState();
   const provider = new ethers.JsonRpcProvider(RPC_URL);
   const wallet   = new ethers.Wallet(PRIV_KEY, provider);
 
@@ -819,11 +936,12 @@ async function runFullDemo(): Promise<void> {
   await step7(state, wallet, agentWallet);
   await step8(state, wallet, agentWallet);
 
-  // Final summary
   divider();
   console.log("\n" + BRAND("  All 8 steps complete.\n"));
   console.log("  " + chalk.bold("Agent:    ") + chalk.cyan(state.agent!.ensName));
   console.log("  " + chalk.bold("Account:  ") + "  " + addrLink(state.agent!.accountAddress));
+  console.log("  " + chalk.bold("Oracle:   ") + chalk.cyan("ThresholdOracle  (2-of-3)") + "  " +
+              chalk.dim(short(state.agent!.thresholdOracleAddress)));
   console.log("  " + chalk.bold("ECDSA:    ") + chalk.red("deprecated  (quantum-safe mode active)"));
   console.log("\n" + chalk.dim("  Run again to execute individual steps or reset state.\n"));
 }
@@ -874,36 +992,59 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  let state = loadState();
+
+  // Detect state written before ThresholdOracle integration (account deployed, no oracle recorded)
+  if (state.agent && state.agent.accountAddress && !state.agent.thresholdOracleAddress) {
+    banner();
+    console.log(chalk.yellow("  ⚠  Saved state is from before the ThresholdOracle integration."));
+    console.log(chalk.yellow("     The stored account was deployed with a single EOA oracle, not"));
+    console.log(chalk.yellow("     the N-of-M ThresholdOracle.  Reset to start a fresh demo run.\n"));
+    const { resetNow } = await inquirer.prompt([{
+      type:    "confirm",
+      name:    "resetNow",
+      message: "Reset demo state now?",
+      default: true,
+    }]);
+    if (resetNow) {
+      if (fs.existsSync(STATE_PATH)) fs.unlinkSync(STATE_PATH);
+      state = loadState();
+      console.log(chalk.yellow("  State cleared. Starting fresh.\n"));
+    }
+  }
+
   banner();
 
-  const state = loadState();
   const statusLine = state.agent
     ? chalk.green("● ") + chalk.cyan(state.agent.ensName) +
-      (state.ecdsaDeprecated ? chalk.red("  [ECDSA deprecated]") : chalk.dim("  [ECDSA active]"))
+      (state.ecdsaDeprecated ? chalk.red("  [ECDSA deprecated]") : chalk.dim("  [ECDSA active]")) +
+      (state.agent.thresholdOracleAddress
+        ? chalk.dim("  oracle: " + short(state.agent.thresholdOracleAddress))
+        : "")
     : chalk.dim("● No agent deployed yet");
 
   console.log("  Status: " + statusLine + "\n");
 
   while (true) {
     const { choice } = await inquirer.prompt([{
-      type: "list",
-      name: "choice",
-      message: "Choose a demo scenario:",
+      type:     "list",
+      name:     "choice",
+      message:  "Choose a demo scenario:",
       pageSize: 15,
       choices: [
         {
-          name: chalk.bold.cyan("🚀  Run Full Demo") + chalk.dim("  (all 8 steps, ~3 min)"),
+          name:  chalk.bold.cyan("🚀  Run Full Demo") + chalk.dim("  (all 8 steps, ~3 min)"),
           value: "full",
         },
         new (inquirer as any).Separator(chalk.dim("──────────────────────────────")),
-        { name: "1   Generate ML-DSA Agent Identity",    value: "1" },
-        { name: "2   Deploy AegisAccount (CREATE2)",     value: "2" },
-        { name: "3   Register on ENS",                   value: "3" },
-        { name: "4   Execute Payment via ZK Proof",      value: "4" },
-        { name: "5   Trigger Quantum Oracle",            value: "5" },
-        { name: "6   Autonomous ECDSA Deprecation",      value: "6" },
-        { name: "7   Verify ENS Identity & Handshake",   value: "7" },
-        { name: "8   Post-Quantum Key Rotation",         value: "8" },
+        { name: "1   Generate ML-DSA Agent Identity",                    value: "1" },
+        { name: "2   Deploy ThresholdOracle + AegisAccount (CREATE2)",   value: "2" },
+        { name: "3   Register on ENS",                                   value: "3" },
+        { name: "4   Execute Payment via ZK Proof",                      value: "4" },
+        { name: "5   Trigger Quantum Oracle",                            value: "5" },
+        { name: "6   N-of-M Oracle Votes → Autonomous ECDSA Deprecation", value: "6" },
+        { name: "7   Verify ENS Identity & Handshake",                   value: "7" },
+        { name: "8   Post-Quantum Key Rotation",                         value: "8" },
         new (inquirer as any).Separator(chalk.dim("──────────────────────────────")),
         { name: chalk.yellow("↩   Reset demo state"),   value: "reset" },
         { name: chalk.red("✕   Exit"),                  value: "exit" },
