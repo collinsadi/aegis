@@ -619,7 +619,7 @@ async function step6(state: DemoState, wallet: ethers.Wallet, oracle: QuantumOra
       thresholdOracleAddress,
       ThresholdOracleArtifact.abi,
       wallet
-    );
+    ) as any;
 
     infoBox([
       ["Contract",   "ThresholdOracle"],
